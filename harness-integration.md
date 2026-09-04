@@ -309,7 +309,7 @@ munder-difflin의 `MEMORY_GRAPH_SPEC.md`를 설계도 삼아 되살렸다.
 | 출처 | 원래 메커니즘 | STD 구현 |
 |---|---|---|
 | ECC | 결정론적 품질 게이트 | `GenerationVerifier` 체인이 PR 전 관문 |
-| ECC | 새 컨텍스트 리뷰어 | `ReviewAgentAdapter`를 구현과 별도 호출로 유지 + 계약 수정으로 실제 동작 가능하게 |
+| ECC | 새 컨텍스트 리뷰어 | `agents/review.md`를 구현과 별도 호출로 유지 + 계약 수정으로 실제 동작 가능하게 (ADR-024 이후) |
 | ECC | AgentShield (설정 파일 보안 스캔) | `OutputContractVerifier`의 경로 검사(`..`, 절대 경로, `.env`/`.git`/키 파일) |
 | ECC | 컨텍스트 상한 + 나머지는 밖에 저장 | `PromptCompactionPolicy` + Redis 생성 캐시 |
 | FounderOS | Source→Signal→Claim→**Fact** 승격 | `EvidenceVerifier` — 근거 없는 성공 주장 반려 |
@@ -324,10 +324,12 @@ munder-difflin의 `MEMORY_GRAPH_SPEC.md`를 설계도 삼아 되살렸다.
 | munder-difflin | 메모리 그래프의 이분 구조 | `HiveGraphView` — 에이전트↔에이전트 간선을 만들지 않음 |
 | munder-difflin | "never silently truncate" | `truncationNotice` — 자른 사실을 문장으로 함께 내려줌 |
 | munder-difflin | 폭주 방지 3종(hops/답변 의무/커서) | **미이식** — 에이전트 간 메시징이 아직 없다 |
+| munder-difflin | GOD 오케스트레이터가 읽고·계획하고·라우팅 | `TicketDecompositionService` + `agents/planning.md`, 결과는 오피스 화면에 노출 (ADR-025/026) |
+| munder-difflin | 에이전트별 격리 git worktree | **미이식** — 도구 실행 루프가 전제다 (ADR-021) |
 | ECC | Prompt Defense Baseline (68개 전부에 동일) | `AgentPromptDefense` — `AbstractAgent`가 한 번만 붙임 |
-| ECC | 신뢰도 게이트 / "0건도 유효한 리뷰" | `ReviewPlaybook.confidenceGate()` |
-| ECC | `silent-failure-hunter` | `ReviewPlaybook.silentFailureHunt()` |
-| ECC | `java-reviewer` 체크리스트 | `ReviewPlaybook.javaSpringChecklist()` (13,333자 → ~4,000자) |
+| ECC | 신뢰도 게이트 / "0건도 유효한 리뷰" | `agents/review.md`의 신뢰도 게이트 절 |
+| ECC | `silent-failure-hunter` | `agents/review.md`의 조용한 실패 탐지 절 |
+| ECC | `java-reviewer` 체크리스트 | `agents/review.md`의 Java/Spring 체크리스트 (13,333자 → ~4,000자) |
 | ECC | `java-build-resolver` 등 도구 루프 | **미이식** — ADR-021(Proposed) |
 
 ---
@@ -351,6 +353,11 @@ munder-difflin의 `MEMORY_GRAPH_SPEC.md`를 설계도 삼아 되살렸다.
 | ADR-020 | 자격증명 마스킹 / 프롬프트 인젝션 방어 / 리뷰 규율 (2차 이식) | Accepted |
 | ADR-021 | 도구 실행 루프 — ECC C층을 옮기려면 무엇이 필요한가 | **Proposed (미착수)** |
 | ADR-022 | 하이브 그래프 화면 — 이분 그래프 | Accepted |
+| ADR-023 | 조용한 배선 버그 2건 — 빈 대시보드와 불가능한 로그인 | Accepted |
+| ADR-024 | 에이전트를 코드가 아니라 마크다운 파일로 정의 | Accepted |
+| ADR-025 | 총괄의 요구사항 분해를 화면이 볼 수 있게 | Accepted |
+| ADR-026 | 2D 오피스 — 요청이 누구에게 쪼개졌는지 | Accepted |
+| ADR-027 | 시크릿을 규약이 아니라 빌드로 차단 | Accepted |
 
 ### 알려진 한계
 
@@ -371,3 +378,129 @@ munder-difflin의 `MEMORY_GRAPH_SPEC.md`를 설계도 삼아 되살렸다.
    폭주 방지 3종은 메일박스가 생길 때 함께 들어간다. (022)
 10. 리뷰 에이전트의 시스템 프롬프트가 약 12,000자로 가장 길다. 가드 상한(24,000) 안이지만,
     리뷰를 상시 파이프라인에 넣으면 토큰 예산과 함께 다시 봐야 한다. (020)
+
+---
+
+## 6. 이식 이후 — 실제로 돌려보고 드러난 것들
+
+1·2차 이식은 "무엇을 붙일까"의 기록이다. 이 절은 **붙인 것을 실제로 띄워 본 뒤** 드러난 것을
+적는다. 화면을 열어 보기 전에는 안 보이던 종류의 문제였다.
+
+### 6-1. 두 개의 조용한 배선 버그 (ADR-023)
+
+대시보드를 처음 브라우저로 열었을 때 **모든 API가 빈 배열을 돌려줬다.** DB에는 행이 10건
+있었다.
+
+원인은 `TaskQueueInMemoryAdapter`에 붙은 `@Primary`였다. 메모리 구현이 DB 구현을 밀어내서
+대시보드·하이브 그래프·타임라인이 전부 DB를 **아예 안 읽고** 있었다. 화면이 비어 있는 이유가
+"큐가 비었다"가 아니라 "DB를 안 본다"였는데, 단위 테스트는 하나도 깨지지 않았다.
+
+로그인도 불가능했다. `loginPage("/login.html")`만 부르면 스프링이 `loginProcessingUrl`도
+같은 값으로 설정해서, `POST /login`이 인증 필터에 도달하지 못하고 401이 됐다.
+
+> 둘 다 **어떤 단위 테스트로도 안 잡히는** 종류였다. 배선은 실행해야만 보인다. 그래서 애노테이션
+> 의도를 검증하는 테스트를 남겼다 — 누가 `@Primary`를 다시 붙이면 그게 먼저 깨진다.
+
+이건 참조 저장소에서 배운 것이 아니라 **띄워 본 것에서** 나왔다. 레퍼런스 분석만으로는 절대
+나오지 않는 항목이다.
+
+### 6-2. 에이전트를 코드가 아니라 데이터로 (ADR-024)
+
+ECC 프롬프트 68개를 검토하면서 계속 걸린 것은 **우리 쪽 프롬프트도 자바 문자열 상수라는 사실**
+이었다. 프롬프트 한 줄을 고치려면 자바 파일을 고치고 재컴파일해야 했다.
+
+7개 `*AgentAdapter.java`를 지우고 `src/main/resources/agents/*.md` 7개로 바꿨다. YAML
+프론트매터(`role`/`agentType`/`displayName`/`emoji`/`skills`) + `## SYSTEM` / `## USER` 두 절.
+`PromptLoader`가 기동 시점에 읽고 `AgentConfig`가 빈으로 등록한다.
+
+`ReviewPlaybook`(A층·B층 이식분)도 통째로 `agents/review.md`로 들어갔다 — 이제 리뷰 규율은
+자바 코드가 아니라 6,900자짜리 마크다운이다.
+
+이건 ADR-020의 재검토 조건 5번("플레이북이 더 커지면 `Prompt`/`PromptLoader`를 되살릴 시점")이
+예상보다 빨리 성립한 경우다.
+
+**부수 효과가 컸다.** 에이전트 정의가 데이터가 되니 화면이 그걸 읽을 수 있다 — 6-3의 사원
+명단이 여기서 나온다.
+
+### 6-3. 총괄의 분해를 드러낸다 (ADR-025, ADR-026)
+
+munder-difflin의 아키텍처에서 가장 인상적인 것은 GOD 오케스트레이터가 **읽고·계획하고·라우팅**
+하는 그림이었다. 우리도 그 경로가 이미 있었다.
+
+```
+IssueIntakeService.enqueue()
+  └ TicketDecompositionService.decompose()
+      ├ TicketPlanningService.plan()        ← 총괄(agents/planning.md)이 실제로 판단
+      └ TicketComponentClassifier.classify() ← 실패하면 정규식 빈도 분류로 폴백
+```
+
+빠져 있던 것은 저장이 아니라 **드러내기**였다. 그리고 하나는 진짜로 없었다 — **누가 결정했는가.**
+`TicketDecompositionService`는 총괄이 판단했는지 폴백으로 떨어졌는지 알고 있었지만, 그 값을
+이벤트 로그 문자열 안에 흘려보내고 버렸다.
+
+이 둘은 결과 품질이 완전히 다르다. 총괄이 요구사항을 읽고 컴포넌트별 지시까지 만든 것과, LLM
+호출이 실패해 제목에서 "API"라는 단어를 세어 BE로 보낸 것이 같은 화면에서 똑같아 보였다.
+
+`decidedBy`를 적재 시점에 남기고(`task_queue.payload`, 스키마 변경 없음), 화면에서 색이 다른
+배지로 구분한다.
+
+| 값 | 배지 |
+|---|---|
+| `PLANNING_AGENT` | 총괄이 분석해서 나눔 (초록) |
+| `KEYWORD_CLASSIFIER` | 총괄 호출 실패 → 키워드 분류로 대체 (주황) |
+| `UNKNOWN` | 분배 주체 기록 없음 (회색) |
+
+**모르면 모른다고 말한다.** 이 게이트 이전에 적재된 행은 `decidedBy`가 없는데, 총괄이 판단했다고
+추측하지 않고 `UNKNOWN`으로 내려준다. 가드가 꺼져 있을 때 "정상"이 아니라 "꺼져 있음"이라고
+말하는 규칙(FounderOS의 정직한 커넥터 상태, ADR-019)의 연장이다.
+
+그 위에 `office.html`을 올렸다. 왼쪽에서 오른쪽으로 읽는 순서가 데이터가 흐르는 순서와 같다 —
+사람이 쓴 원문 → 총괄 → 담당자별 세부 지시.
+
+**일이 없는 사원도 책상을 지킨다.** 명단이 큐가 아니라 `agents/*.md`에서 오기 때문이다. 그래서
+리뷰어가 한 번도 안 불렸다는 사실이 화면에 남는다 — 큐만 보는 화면에서는 "리뷰어가 없다"와
+구분되지 않던 것이다. 실제로 리뷰 에이전트는 아직 파이프라인에 자동 삽입되지 않았고(ADR-019
+Future 4번), 그 미완성이 이 화면에서는 빈 책상으로 보인다.
+
+### 6-4. 시크릿을 규약이 아니라 빌드로 막는다 (ADR-027)
+
+개인 저장소로 옮기기 전에 작업 트리를 훑었다. **설정 파일은 이미 깨끗했다** — 모든 자격증명이
+`${VAR:}` 빈 기본값이었다. 문제는 그걸 지킬 장치가 없다는 것이었다.
+
+* 루트에 `.gitignore`가 **없었다.** 그런데 `docker-compose.yml`이 `${MYSQL_ROOT_PASSWORD:?}`를
+  쓰므로 이 저장소를 돌리려면 루트에 `.env`를 만들 수밖에 없다. **시크릿 파일을 만들라고
+  요구하면서 그 파일을 커밋으로부터 보호하지 않고 있었다.**
+* `AGENTS.md`에 "키·토큰 기본값에 실제 시크릿 금지"가 이미 적혀 있었다. 그리고 이 저장소에는
+  GitHub PAT과 OpenAI 키가 평문으로 커밋된 이력이 있다. **규약은 그때도 같은 자리에 있었다.**
+* 유출 목록(`SECRETS_TO_ROTATE.md`)이 재발급 대상을 나열하며 실제 비밀번호를 문자 그대로 적어
+  뒀고, 같은 값이 마스킹을 검증하는 `SecretRedactorTest`의 픽스처로도 들어가 있었다.
+
+`ApplicationConfigSecretsTest`가 `application.yml`에 자격증명 값이 박히면 빌드를 거부한다.
+판단은 키 이름 전체가 아니라 **마지막 마디**로 한다 — `max-tokens: 4096`은 이름에 `token`이
+들어가도 자격증명이 아니다. 그리고 **검사기 자신이 동작하는지 보는 테스트**를 같이 뒀다.
+정규식이 아무것도 못 잡게 망가지면 본 테스트는 조용히 통과하는데, 그게 바로 이 저장소가 계속
+경계하는 실패 양상이다.
+
+이 대응은 참조 저장소가 아니라 `SecretRedactor`(munder-difflin)를 옮기던 원칙의 연장이다 —
+자격증명 *모양*으로 판단하고, 엔트로피 같은 오탐 많은 기법은 쓰지 않는다.
+
+### 6-5. 이 라운드의 검증
+
+* `./gradlew test` 기준 **329개 중 328개 통과.** 남은 1개는 5절과 같은 `WorkflowPropertiesBasedE2ETest`로,
+  실제 자격증명을 요구한다. 이번에도 변경 전 트리를 stash 후 재실행해 같은 지점에서 실패함을 확인했다.
+* 화면은 목이 아니라 **실제 MySQL 데이터로** 렌더링을 확인했다(Playwright, 헤드리스 Chromium).
+  총괄 분배 경로와 키워드 폴백 경로 두 가지를 각각 띄워 배지가 다르게 나오는 것까지 봤다.
+
+### 6-6. 남은 것
+
+앞으로 할 일은 `FinVANT/n8n` 루트의 `ROADMAP.md`에 착수 조건과 함께 정리했다. 요약하면 **다음
+한 걸음은 도구 실행 루프(ADR-021)**다.
+
+지금 에이전트는 요구사항 텍스트만 받고 코드를 짠다. 기존 코드를 한 줄도 못 읽는다. ADR-021이
+적어 둔 착수 조건 중 2번("요구사항이 기존 코드를 읽어야 풀린다")은 "아카이브 저장소를 읽어
+자기소개서를 쓴다"나 "미완성 사이드 프로젝트를 알아서 작업한다" 같은 목표를 시도하는 순간
+자동으로 성립한다. 그러니 실질적으로는 "언젠가"가 아니라 다음 마일스톤의 전제다.
+
+읽기 전용 도구(`read_file`/`list_files`/`grep`) 세 개만 있으면 첫 시나리오는 돈다 — 쓰기도,
+worktree도, 승인 게이트도 그 다음이다. munder-difflin이 에이전트마다 격리된 git worktree를
+주는 이유(병렬 실행 때 서로의 작업 트리를 밟지 않기)는 **쓰기가 생길 때** 비로소 필요해진다.
